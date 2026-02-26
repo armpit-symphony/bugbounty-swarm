@@ -266,6 +266,7 @@ if __name__ == "__main__":
     parser.add_argument("--authorized", action="store_true", help="Confirm explicit authorization for active tests")
     parser.add_argument("--schema-strict", action="store_true", help="Fail if OpenClaw schema validation fails")
     parser.add_argument("--schema-repair", action="store_true", help="Auto-repair OpenClaw summary fields")
+    parser.add_argument("--dry-run", action="store_true", help="Validate config and emit empty report without requests")
     args = parser.parse_args()
 
     scope = ScopeConfig.load(default_scope_path())
@@ -280,7 +281,20 @@ if __name__ == "__main__":
     os.environ["EVIDENCE_LEVEL"] = str(budget_cfg.get("evidence_level", "standard"))
     reqs = budget_cfg.get("requests", {})
     os.environ["BUDGET_MAX_PER_MINUTE"] = str(reqs.get("max_per_minute", 120))
-    results = orchestrator.run_full_swarm()
+    if args.dry_run:
+        results = {
+            "target": args.target,
+            "timestamp": datetime.utcnow().isoformat(),
+            "profile": args.profile,
+            "note": "dry_run_no_requests",
+            "recon": None,
+            "crawl": None,
+            "enrichment": None,
+            "summary": {},
+        }
+        orchestrator.results = results
+    else:
+        results = orchestrator.run_full_swarm()
     json_path, md_path, html_path = orchestrator.save_report()
 
     evidence_zip = package_evidence(args.output_dir)

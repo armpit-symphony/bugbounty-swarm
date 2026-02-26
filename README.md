@@ -264,6 +264,27 @@ Note: schema validation is strict by default. Use `--schema-repair` to auto-fix.
 
 Each run writes `output/openclaw_schema_report.json` with validation status.
 
+## 🧪 Dry Run
+
+Validate configs and emit empty reports without network requests:
+
+```bash
+python3 swarm_orchestrator.py example.com --dry-run
+python3 vuln_scanner_orchestrator.py https://example.com --dry-run
+```
+
+## 📐 Findings Schema
+
+`configs/findings_schema.json` is copied into each vuln output directory.
+
+## 📊 Dashboard
+
+Build a dashboard across runs:
+
+```bash
+python3 scripts/build_dashboard.py
+```
+
 ## 🔒 Safety & Ethics
 
 > **⚠️ WARNING: For authorized testing only**

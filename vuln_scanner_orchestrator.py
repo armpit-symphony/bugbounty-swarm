@@ -178,10 +178,17 @@ class VulnScannerOrchestrator:
         md_path = write_markdown(self.output_dir, base, md)
         html_body = self._build_html()
         html_path = write_html(self.output_dir, base, f"Vulnerability Scan - {self.target}", html_body)
+        self._write_findings_schema()
         print(f"\n💾 Report: {json_path}")
         print(f"📝 Markdown: {md_path}")
         print(f"🌐 HTML: {html_path}")
         return json_path, md_path, html_path
+
+    def _write_findings_schema(self):
+        schema_path = Path(repo_root() / "configs" / "findings_schema.json")
+        if schema_path.exists():
+            dest = Path(self.output_dir) / "findings_schema.json"
+            dest.write_text(schema_path.read_text())
 
     def _build_markdown(self) -> str:
         summary = self.results.get("by_severity", {})
@@ -273,6 +280,7 @@ if __name__ == "__main__":
     parser.add_argument("--summary-json", default="", help="Write summary JSON to this path")
     parser.add_argument("--schema-strict", action="store_true", help="Fail if OpenClaw schema validation fails")
     parser.add_argument("--schema-repair", action="store_true", help="Auto-repair OpenClaw summary fields")
+    parser.add_argument("--dry-run", action="store_true", help="Emit empty report without requests")
     args = parser.parse_args()
 
     scope = ScopeConfig.load(default_scope_path())
@@ -293,7 +301,18 @@ if __name__ == "__main__":
 
     tech_list = [t.strip() for t in args.tech.split(",") if t.strip()]
     scanner = VulnScannerOrchestrator(args.target, output_dir=args.output_dir, tech_detected=tech_list)
-    scanner.run_all_scanners(active_tests=active_tests)
+    if args.dry_run:
+        scanner.results = {
+            "target": args.target,
+            "timestamp": datetime.utcnow().isoformat(),
+            "scans": {},
+            "total_findings": 0,
+            "by_severity": {"CRITICAL": 0, "HIGH": 0, "MEDIUM": 0, "LOW": 0},
+            "note": "dry_run_no_requests",
+        }
+        scanner.report_paths = scanner.save_report()
+    else:
+        scanner.run_all_scanners(active_tests=active_tests)
 
     report_paths = getattr(scanner, "report_paths", None) or (None, None, None)
     evidence_zip = package_evidence(args.output_dir)
