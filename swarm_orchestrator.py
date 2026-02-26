@@ -25,6 +25,7 @@ from core.scope import ScopeConfig, require_in_scope, default_scope_path
 from core.report import write_json, write_markdown, write_html
 from core.config import load_profiles, load_mcp, load_budget, repo_root
 from core.focus import load_focus, require_focus_target, resolve_focus_target
+from core.openclaw_schema import load_schema, validate as validate_schema
 from mcp.recon_adapter import ReconMCPAdapter
 from mcp.crawl_adapter import CrawlMCPAdapter
 from mcp.enrichment_adapter import EnrichmentMCPAdapter
@@ -327,6 +328,15 @@ if __name__ == "__main__":
         "vuln_scan": vuln_summary,
         "focus_target": focus_target,
     }
+
+    schema_path = str(repo_root() / "configs" / "openclaw_schema.json")
+    try:
+        schema = load_schema(schema_path)
+        errors = validate_schema(summary, schema)
+        if errors:
+            print(f"⚠️ OpenClaw schema validation errors: {errors}")
+    except Exception:
+        pass
 
     if args.summary_json:
         with open(args.summary_json, "w") as f:

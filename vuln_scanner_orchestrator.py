@@ -26,6 +26,7 @@ from core.scope import ScopeConfig, require_in_scope, require_authorized, defaul
 from core.report import write_json, write_markdown, write_html
 from core.config import load_profiles, load_budget, repo_root
 from core.focus import load_focus, require_focus_target, resolve_focus_target
+from core.openclaw_schema import load_schema, validate as validate_schema
 from core.playbooks import load_all_playbooks
 from core.tech_router import route_playbooks
 from agents.triage_agent import triage_findings
@@ -309,6 +310,15 @@ if __name__ == "__main__":
         "total_findings": scanner.results.get("total_findings", 0),
         "focus_target": focus_target,
     }
+
+    schema_path = str(repo_root() / "configs" / "openclaw_schema.json")
+    try:
+        schema = load_schema(schema_path)
+        errors = validate_schema(summary, schema)
+        if errors:
+            print(f"⚠️ OpenClaw schema validation errors: {errors}")
+    except Exception:
+        pass
 
     if args.summary_json:
         with open(args.summary_json, "w") as f:

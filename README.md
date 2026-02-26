@@ -207,6 +207,21 @@ requests:
   max_per_run: 1000
 ```
 
+## 🔁 Focus Rotation
+
+Configure rotation quickly:
+
+```bash
+python3 scripts/rotate_focus.py --targets "example.com,example.org" --days 56 --enable
+```
+
+## 🧰 Make Targets
+
+```bash
+make test
+make validate
+```
+
 ## 🤖 OpenClaw Integration
 
 Emit a structured summary for OpenClaw and package artifacts:
