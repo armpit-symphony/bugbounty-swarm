@@ -14,6 +14,7 @@ import re
 from datetime import datetime
 from pathlib import Path
 from core.rate_limit import from_env as budget_from_env
+# response_differs reserved for future recon diffing enhancements
 
 # Config
 OUTPUT_DIR = os.getenv("SWARM_OUTPUT_DIR") or str(Path(__file__).resolve().parents[1] / "output")

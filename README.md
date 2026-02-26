@@ -252,6 +252,10 @@ python3 vuln_scanner_orchestrator.py https://example.com \
 
 Note: schema validation is strict by default. Use `--schema-repair` to auto-fix.
 
+## 🧾 Schema Report
+
+Each run writes `output/openclaw_schema_report.json` with validation status.
+
 ## 🔒 Safety & Ethics
 
 > **⚠️ WARNING: For authorized testing only**

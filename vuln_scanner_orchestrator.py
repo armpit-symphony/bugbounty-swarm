@@ -27,6 +27,7 @@ from core.report import write_json, write_markdown, write_html
 from core.config import load_profiles, load_budget, repo_root
 from core.focus import load_focus, require_focus_target, resolve_focus_target
 from core.openclaw_schema import load_schema, validate as validate_schema, repair as repair_schema
+from core.openclaw_report import write_report as write_schema_report
 from core.playbooks import load_all_playbooks
 from core.tech_router import route_playbooks
 from agents.triage_agent import triage_findings
@@ -319,8 +320,10 @@ if __name__ == "__main__":
         if args.schema_repair:
             summary = repair_schema(summary, schema)
         errors = validate_schema(summary, schema)
+        report_path = write_schema_report(args.output_dir, errors)
         if errors:
             print(f"⚠️ OpenClaw schema validation errors: {errors}")
+            print(f"🧾 Schema report: {report_path}")
             raise SystemExit(2)
     except Exception:
         raise

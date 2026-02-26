@@ -14,6 +14,7 @@ from datetime import datetime
 from pathlib import Path
 from urllib.parse import urljoin, urlparse
 from core.rate_limit import from_env as budget_from_env
+from core.http_utils import response_differs
 
 # Config
 OUTPUT_DIR = os.getenv("SWARM_OUTPUT_DIR") or str(Path(__file__).resolve().parents[1] / "output")
@@ -68,54 +69,63 @@ class CrawlAgent:
         print(f"   📄 Crawling: {url}")
         
         try:
+            baseline = None
+            self._budget.wait_for_budget()
+            baseline = requests.get(url, timeout=10, headers={
+                "User-Agent": "Mozilla/5.0 (Bug Bounty Bot)"
+            })
             self._budget.wait_for_budget()
             resp = requests.get(url, timeout=10, headers={
                 "User-Agent": "Mozilla/5.0 (Bug Bounty Bot)"
             })
             
-            if resp.ok:
-                content = resp.text
-                
-                # Extract links
-                from bs4 import BeautifulSoup
-                soup = BeautifulSoup(content, "html.parser")
-                
-                # Find all links
-                for link in soup.find_all("a", href=True):
-                    href = link["href"]
-                    full_url = urljoin(url, href)
-                    
-                    # Same domain only
-                    if urlparse(full_url).netloc == urlparse(self.target).netloc:
-                        if full_url not in self.visited:
-                            self.results["endpoints"].append(full_url)
-                
-                # Find forms
-                forms = soup.find_all("form")
-                for form in forms:
-                    form_data = {
-                        "action": form.get("action", ""),
-                        "method": form.get("method", "get"),
-                        "inputs": [inp.get("name", "") for inp in form.find_all(["input", "textarea"])]
-                    }
-                    self.results["forms"].append(form_data)
-                
-                # Find JS files
-                for script in soup.find_all("script", src=True):
-                    js_url = urljoin(url, script["src"])
-                    if js_url not in self.results["js_files"]:
-                        self.results["js_files"].append(js_url)
-                
-                page_info = {
-                    "url": url,
-                    "status": resp.status_code,
-                    "title": soup.title.string if soup.title else "",
-                    "forms_count": len(forms),
-                    "links_count": len(soup.find_all("a"))
+            if not resp.ok:
+                return
+            if not response_differs(baseline, resp):
+                return
+            content = resp.text
+
+            # Extract links
+            from bs4 import BeautifulSoup
+            soup = BeautifulSoup(content, "html.parser")
+
+            # Find all links
+            for link in soup.find_all("a", href=True):
+                href = link["href"]
+                full_url = urljoin(url, href)
+
+                # Same domain only
+                if urlparse(full_url).netloc == urlparse(self.target).netloc:
+                    if full_url not in self.visited:
+                        self.results["endpoints"].append(full_url)
+
+            # Find forms
+            forms = soup.find_all("form")
+            for form in forms:
+                form_data = {
+                    "action": form.get("action", ""),
+                    "method": form.get("method", "get"),
+                    "inputs": [inp.get("name", "") for inp in form.find_all(["input", "textarea"])],
                 }
-                self.results["pages"].append(page_info)
-                
-                print(f"      ✅ {len(forms)} forms, {len(soup.find_all('a'))} links")
+                self.results["forms"].append(form_data)
+
+            # Find JS files
+            for script in soup.find_all("script", src=True):
+                js_url = urljoin(url, script["src"])
+                if js_url not in self.results["js_files"]:
+                    self.results["js_files"].append(js_url)
+
+            page_info = {
+                "url": url,
+                "status": resp.status_code,
+                "title": soup.title.string if soup.title else "",
+                "forms_count": len(forms),
+                "links_count": len(soup.find_all("a")),
+            }
+            self.results["pages"].append(page_info)
+
+            print(f"      ✅ {len(forms)} forms, {len(soup.find_all('a'))} links")
+            print(f"      ✅ {len(forms)} forms, {len(soup.find_all('a'))} links")
                 
         except Exception as e:
             print(f"      ❌ Failed: {e}")
