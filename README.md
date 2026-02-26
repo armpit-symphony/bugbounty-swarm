@@ -285,6 +285,11 @@ Build a dashboard across runs:
 python3 scripts/build_dashboard.py
 ```
 
+The dashboard includes:
+- Total report counts and target summary
+- Per-target aggregation
+- Filtering by type and text search
+
 ## 🔒 Safety & Ethics
 
 > **⚠️ WARNING: For authorized testing only**
