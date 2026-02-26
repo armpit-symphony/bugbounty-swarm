@@ -250,6 +250,8 @@ python3 vuln_scanner_orchestrator.py https://example.com \
   --artifact-dir output/artifacts
 ```
 
+Note: when `--openclaw` is set, schema validation is strict by default. Use `--schema-repair` to auto-fix.
+
 ## 🔒 Safety & Ethics
 
 > **⚠️ WARNING: For authorized testing only**
