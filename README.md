@@ -302,6 +302,12 @@ To install this repo as an agent skill on the server:
 bash scripts/install_self.sh
 ```
 
+## 🚀 One-Command Bootstrap
+
+```bash
+bash scripts/bootstrap.sh example.com
+```
+
 ## 🔒 Safety & Ethics
 
 > **⚠️ WARNING: For authorized testing only**
