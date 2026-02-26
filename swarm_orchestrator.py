@@ -8,6 +8,9 @@ import os
 import sys
 import json
 import subprocess
+import argparse
+import re
+import shutil
 from datetime import datetime
 from pathlib import Path
 
@@ -18,23 +21,40 @@ sys.path.insert(0, str(AGENT_DIR))
 from agents.recon_agent import ReconAgent
 from agents.crawl_agent import CrawlAgent
 from agents.enrichment_agent import EnrichmentAgent
+from core.scope import ScopeConfig, require_in_scope, default_scope_path
+from core.report import write_json, write_markdown, write_html
+from core.config import load_profiles, load_mcp, load_budget, repo_root
+from core.focus import load_focus, require_focus_target, resolve_focus_target
+from mcp.recon_adapter import ReconMCPAdapter
+from mcp.crawl_adapter import CrawlMCPAdapter
+from mcp.enrichment_adapter import EnrichmentMCPAdapter
+from scripts.package_evidence import package as package_evidence
+from vuln_scanner_orchestrator import VulnScannerOrchestrator
+from core.scope import require_authorized
 
 # Config
-OUTPUT_DIR = "/home/sparky/.openclaw/workspace/bugbounty-swarm/output"
+OUTPUT_DIR = os.getenv("SWARM_OUTPUT_DIR") or str(Path(__file__).parent / "output")
+
+
+def _safe_slug(value: str) -> str:
+    return re.sub(r"[^A-Za-z0-9._-]+", "_", value).strip("_")
 
 class SwarmOrchestrator:
-    def __init__(self, target):
+    def __init__(self, target, profile="cautious", output_dir: str = OUTPUT_DIR):
         self.target = target
+        self.profile = profile
+        self.output_dir = output_dir
         self.results = {
             "target": target,
             "timestamp": datetime.utcnow().isoformat(),
+            "profile": profile,
             "recon": None,
             "crawl": None,
             "enrichment": None,
             "summary": {}
         }
         
-        os.makedirs(OUTPUT_DIR, exist_ok=True)
+        os.makedirs(self.output_dir, exist_ok=True)
     
     def run_full_swarm(self):
         """Run complete bug bounty workflow"""
@@ -43,12 +63,41 @@ class SwarmOrchestrator:
         print(f"   Target: {self.target}")
         print("=" * 60)
         
+        profiles = load_profiles(str(repo_root() / "configs" / "profiles.yaml"))
+        profile_cfg = profiles.get("profiles", {}).get(self.profile, {})
+        max_pages = int(profile_cfg.get("max_pages", 20))
+        mcp_cfg = load_mcp(str(repo_root() / "configs" / "mcp.yaml"))
+        mcp_endpoints = (mcp_cfg or {}).get("endpoints", {})
+        mcp_enabled = bool((mcp_cfg or {}).get("enabled", True))
+
+        recon_mcp = ReconMCPAdapter(mcp_endpoints.get("recon", "")) if mcp_enabled else None
+        crawl_mcp = CrawlMCPAdapter(mcp_endpoints.get("crawl", "")) if mcp_enabled else None
+        enrich_mcp = EnrichmentMCPAdapter(mcp_endpoints.get("enrichment", "")) if mcp_enabled else None
+
+        if recon_mcp and recon_mcp.available() and not recon_mcp.health():
+            print("⚠️ MCP recon endpoint not healthy, falling back to local.")
+            recon_mcp = None
+        if crawl_mcp and crawl_mcp.available() and not crawl_mcp.health():
+            print("⚠️ MCP crawl endpoint not healthy, falling back to local.")
+            crawl_mcp = None
+        if enrich_mcp and enrich_mcp.available() and not enrich_mcp.health():
+            print("⚠️ MCP enrichment endpoint not healthy, falling back to local.")
+            enrich_mcp = None
+
         # Phase 1: Recon
         print("\n📡 PHASE 1: RECON")
         print("-" * 40)
         try:
-            recon = ReconAgent(self.target)
-            self.results["recon"] = recon.run()
+            if recon_mcp and recon_mcp.available():
+                mcp_data = recon_mcp.run(self.target)
+                if mcp_data:
+                    self.results["recon"] = mcp_data
+                else:
+                    recon = ReconAgent(self.target)
+                    self.results["recon"] = recon.run()
+            else:
+                recon = ReconAgent(self.target)
+                self.results["recon"] = recon.run()
         except Exception as e:
             print(f"   ❌ Recon failed: {e}")
         
@@ -56,8 +105,16 @@ class SwarmOrchestrator:
         print("\n🕷️ PHASE 2: CRAWL")
         print("-" * 40)
         try:
-            crawl = CrawlAgent(self.target, max_pages=15)
-            self.results["crawl"] = crawl.run()
+            if crawl_mcp and crawl_mcp.available():
+                mcp_data = crawl_mcp.run(self.target, max_pages=max_pages)
+                if mcp_data:
+                    self.results["crawl"] = mcp_data
+                else:
+                    crawl = CrawlAgent(self.target, max_pages=max_pages)
+                    self.results["crawl"] = crawl.run()
+            else:
+                crawl = CrawlAgent(self.target, max_pages=max_pages)
+                self.results["crawl"] = crawl.run()
         except Exception as e:
             print(f"   ❌ Crawl failed: {e}")
         
@@ -65,26 +122,31 @@ class SwarmOrchestrator:
         print("\n🔍 PHASE 3: ENRICHMENT")
         print("-" * 40)
         try:
-            enrichment = EnrichmentAgent()
-            
-            # Detect technologies
-            enrichment.detect_tech(f"https://{self.target}")
-            
-            # If we found IPs, enrich them
-            if self.results.get("recon") and self.results["recon"].get("dns", {}).get("a"):
-                for ip in self.results["recon"]["dns"]["a"]:
-                    enrichment.lookup_ip_virustotal(ip)
-            
-            enrichment.save_results()
-            self.results["enrichment"] = enrichment.results
+            if enrich_mcp and enrich_mcp.available():
+                mcp_data = enrich_mcp.run(self.target)
+                if mcp_data:
+                    self.results["enrichment"] = mcp_data
+                else:
+                    enrichment = EnrichmentAgent()
+                    enrichment.detect_tech(f"https://{self.target}")
+                    if self.results.get("recon") and self.results["recon"].get("dns", {}).get("a"):
+                        for ip in self.results["recon"]["dns"]["a"]:
+                            enrichment.lookup_ip_virustotal(ip)
+                    enrichment.save_results()
+                    self.results["enrichment"] = enrichment.results
+            else:
+                enrichment = EnrichmentAgent()
+                enrichment.detect_tech(f"https://{self.target}")
+                if self.results.get("recon") and self.results["recon"].get("dns", {}).get("a"):
+                    for ip in self.results["recon"]["dns"]["a"]:
+                        enrichment.lookup_ip_virustotal(ip)
+                enrichment.save_results()
+                self.results["enrichment"] = enrichment.results
         except Exception as e:
             print(f"   ❌ Enrichment failed: {e}")
         
         # Generate summary
         self.generate_summary()
-        
-        # Save final report
-        self.save_report()
         
         print("\n" + "=" * 60)
         print("✅ SWARM COMPLETE")
@@ -121,23 +183,24 @@ class SwarmOrchestrator:
     
     def save_report(self):
         """Save final JSON report"""
-        filename = f"{OUTPUT_DIR}/swarm_report_{self.target}_{datetime.utcnow().strftime('%Y%m%d_%H%M%S')}.json"
-        
-        with open(filename, "w") as f:
-            json.dump(self.results, f, indent=2)
-        
-        print(f"\n💾 Report: {filename}")
-        
-        # Also save markdown summary
-        self.save_markdown_report(filename.replace(".json", ".md"))
+        slug = _safe_slug(self.target)
+        stamp = datetime.utcnow().strftime("%Y%m%d_%H%M%S")
+        base = f"swarm_report_{slug}_{stamp}"
+        json_path = write_json(self.output_dir, base, self.results)
+        print(f"\n💾 Report: {json_path}")
+        md_path, html_path = self.save_markdown_report(base)
+        print(f"📝 Markdown: {md_path}")
+        print(f"🌐 HTML: {html_path}")
+        return json_path, md_path, html_path
     
-    def save_markdown_report(self, filename):
+    def save_markdown_report(self, base_name):
         """Save human-readable markdown report"""
         summary = self.results.get("summary", {})
         
         md = f"""# Bug Bounty Report - {self.target}
 
 **Generated:** {self.results['timestamp']}
+**Profile:** {self.profile}
 
 ## Summary
 
@@ -184,17 +247,96 @@ class SwarmOrchestrator:
             for ss in self.results["crawl"]["screenshots"]:
                 md += f"- `{ss.get('name')}`: {ss.get('path')}\n"
         
-        with open(filename, "w") as f:
-            f.write(md)
-        
-        print(f"📝 Markdown: {filename}")
+        md_path = write_markdown(self.output_dir, base_name, md)
+        html_body = f"<h1>Bug Bounty Report - {self.target}</h1>" + md.replace("\n", "<br />")
+        html_path = write_html(self.output_dir, base_name, f"Bug Bounty Report - {self.target}", html_body)
+        return md_path, html_path
 
 if __name__ == "__main__":
-    if len(sys.argv) < 2:
-        print("Usage: python swarm_orchestrator.py <target_domain>")
-        print("Example: python swarm_orchestrator.py example.com")
-        sys.exit(1)
-    
-    target = sys.argv[1]
-    orchestrator = SwarmOrchestrator(target)
+    parser = argparse.ArgumentParser(description="Bug Bounty Swarm Orchestrator")
+    parser.add_argument("target", help="Target domain or URL")
+    parser.add_argument("--profile", default="cautious", choices=["passive", "cautious", "active"])
+    parser.add_argument("--output-dir", default=OUTPUT_DIR)
+    parser.add_argument("--openclaw", action="store_true", help="Emit OpenClaw-friendly summary")
+    parser.add_argument("--artifact-dir", default="", help="Copy reports and evidence bundle here")
+    parser.add_argument("--summary-json", default="", help="Write summary JSON to this path")
+    parser.add_argument("--run-vuln", action="store_true", help="Run vuln scans after swarm")
+    parser.add_argument("--authorized", action="store_true", help="Confirm explicit authorization for active tests")
+    args = parser.parse_args()
+
+    scope = ScopeConfig.load(default_scope_path())
+    require_in_scope(scope, args.target)
+    focus = load_focus(str(repo_root() / "configs" / "focus.yaml"))
+    require_focus_target(focus, args.target)
+    focus_target = resolve_focus_target(focus)
+
+    os.environ["SWARM_OUTPUT_DIR"] = args.output_dir
+    orchestrator = SwarmOrchestrator(args.target, profile=args.profile, output_dir=args.output_dir)
+    budget_cfg = load_budget(str(repo_root() / "configs" / "budget.yaml"))
+    os.environ["EVIDENCE_LEVEL"] = str(budget_cfg.get("evidence_level", "standard"))
+    reqs = budget_cfg.get("requests", {})
+    os.environ["BUDGET_MAX_PER_MINUTE"] = str(reqs.get("max_per_minute", 120))
     results = orchestrator.run_full_swarm()
+    json_path, md_path, html_path = orchestrator.save_report()
+
+    evidence_zip = package_evidence(args.output_dir)
+    if evidence_zip:
+        print(f"📦 Evidence bundle: {evidence_zip}")
+
+    vuln_summary = None
+    if args.run_vuln and args.profile != "passive":
+        require_authorized(args.authorized)
+        tech_detected = []
+        if results.get("enrichment", {}).get("tech_detection"):
+            for td in results["enrichment"]["tech_detection"]:
+                tech_detected.extend(td.get("tech", []))
+        tech_detected = list(set(tech_detected))
+        scanner = VulnScannerOrchestrator(
+            args.target,
+            output_dir=args.output_dir,
+            tech_detected=tech_detected,
+        )
+        scanner.run_all_scanners(active_tests=True)
+        vuln_reports = getattr(scanner, "report_paths", None) or (None, None, None)
+        vuln_summary = {
+            "reports": {
+                "json": vuln_reports[0],
+                "markdown": vuln_reports[1],
+                "html": vuln_reports[2],
+            },
+            "total_findings": scanner.results.get("total_findings", 0),
+        }
+    elif args.run_vuln and args.profile == "passive":
+        print("⚪ Passive profile: skipping vuln scans.")
+
+    tech_detected = []
+    if results.get("enrichment", {}).get("tech_detection"):
+        for td in results["enrichment"]["tech_detection"]:
+            tech_detected.extend(td.get("tech", []))
+    summary = {
+        "schema_version": "1.0",
+        "target": args.target,
+        "profile": args.profile,
+        "reports": {
+            "json": json_path,
+            "markdown": md_path,
+            "html": html_path,
+        },
+        "evidence_zip": evidence_zip,
+        "tech_detected": list(set(tech_detected)),
+        "vuln_scan": vuln_summary,
+        "focus_target": focus_target,
+    }
+
+    if args.summary_json:
+        with open(args.summary_json, "w") as f:
+            json.dump(summary, f, indent=2)
+
+    if args.artifact_dir:
+        os.makedirs(args.artifact_dir, exist_ok=True)
+        for p in [json_path, md_path, html_path, evidence_zip]:
+            if p and os.path.exists(p):
+                shutil.copy2(p, args.artifact_dir)
+
+    if args.openclaw:
+        print(json.dumps(summary))

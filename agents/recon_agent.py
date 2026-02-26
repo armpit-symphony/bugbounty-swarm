@@ -10,10 +10,13 @@ import json
 import subprocess
 import socket
 import requests
+import re
 from datetime import datetime
+from pathlib import Path
+from core.rate_limit import from_env as budget_from_env
 
 # Config
-OUTPUT_DIR = "/home/sparky/.openclaw/workspace/bugbounty-swarm/output"
+OUTPUT_DIR = os.getenv("SWARM_OUTPUT_DIR") or str(Path(__file__).resolve().parents[1] / "output")
 SHODAN_KEY = os.environ.get("SHODAN_API_KEY", "")
 CENSYS_API_KEY = os.environ.get("CENSYS_API_KEY", "")
 CENSYS_SECRET = os.environ.get("CENSYS_API_SECRET", "")
@@ -36,6 +39,7 @@ class ReconAgent:
     def run(self):
         """Run full recon based on available APIs"""
         print(f"🎯 Starting recon on: {self.target}")
+        self._budget = budget_from_env()
         
         # Always run basic recon
         self.resolve_dns()
@@ -90,6 +94,7 @@ class ReconAgent:
         try:
             url = f"https://api.shodan.io/dns/domain/{self.target}"
             params = {"key": SHODAN_KEY}
+            self._budget.wait_for_budget()
             resp = requests.get(url, params=params, timeout=10)
             if resp.ok:
                 data = resp.json()
@@ -114,6 +119,7 @@ class ReconAgent:
                 "per_page": 10
             }
             auth = (CENSYS_API_KEY, CENSYS_SECRET)
+            self._budget.wait_for_budget()
             resp = requests.get(url, params=params, auth=auth, timeout=10)
             if resp.ok:
                 data = resp.json()
@@ -131,6 +137,7 @@ class ReconAgent:
         # CRT.sh (free)
         try:
             url = f"https://crt.sh/?q={self.target}&output=json"
+            self._budget.wait_for_budget()
             resp = requests.get(url, timeout=15)
             if resp.ok:
                 data = resp.json()
@@ -147,7 +154,8 @@ class ReconAgent:
     def save_results(self):
         """Save results to file"""
         os.makedirs(OUTPUT_DIR, exist_ok=True)
-        filename = f"{OUTPUT_DIR}/recon_{self.target}_{datetime.utcnow().strftime('%Y%m%d_%H%M%S')}.json"
+        safe_target = re.sub(r"[^A-Za-z0-9._-]+", "_", self.target).strip("_")
+        filename = f"{OUTPUT_DIR}/recon_{safe_target}_{datetime.utcnow().strftime('%Y%m%d_%H%M%S')}.json"
         
         with open(filename, "w") as f:
             json.dump(self.results, f, indent=2)

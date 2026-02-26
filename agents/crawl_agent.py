@@ -9,11 +9,14 @@ import sys
 import json
 import subprocess
 import requests
+import re
 from datetime import datetime
+from pathlib import Path
 from urllib.parse import urljoin, urlparse
+from core.rate_limit import from_env as budget_from_env
 
 # Config
-OUTPUT_DIR = "/home/sparky/.openclaw/workspace/bugbounty-swarm/output"
+OUTPUT_DIR = os.getenv("SWARM_OUTPUT_DIR") or str(Path(__file__).resolve().parents[1] / "output")
 SCREENSHOT_DIR = f"{OUTPUT_DIR}/screenshots"
 
 class CrawlAgent:
@@ -38,6 +41,7 @@ class CrawlAgent:
     def run(self):
         """Run crawl based on target type"""
         print(f"🕷️ Starting crawl on: {self.target}")
+        self._budget = budget_from_env()
         
         # Normalize URL
         if not self.target.startswith("http"):
@@ -64,6 +68,7 @@ class CrawlAgent:
         print(f"   📄 Crawling: {url}")
         
         try:
+            self._budget.wait_for_budget()
             resp = requests.get(url, timeout=10, headers={
                 "User-Agent": "Mozilla/5.0 (Bug Bounty Bot)"
             })
@@ -122,6 +127,7 @@ class CrawlAgent:
         # Create temp JS file for puppeteer
         screenshot_path = f"{SCREENSHOT_DIR}/{name}.png"
         
+        safe_url = url.replace("'", "%27")
         puppeteer_script = f"""
 const {{ chromium }} = require('puppeteer');
 
@@ -129,7 +135,7 @@ const {{ chromium }} = require('puppeteer');
     const browser = await chromium.launch();
     const page = await browser.newPage();
     await page.setViewport({{ width: 1280, height: 720 }});
-    await page.goto('{url}', {{ waitUntil: 'networkidle2' }});
+    await page.goto('{safe_url}', {{ waitUntil: 'networkidle2' }});
     await page.screenshot({{ path: '{screenshot_path}' }});
     await browser.close();
 }})();
@@ -172,6 +178,7 @@ const {{ chromium }} = require('puppeteer');
         
         for js_url in self.results["js_files"][:10]:  # Limit to 10
             try:
+                self._budget.wait_for_budget()
                 resp = requests.get(js_url, timeout=5)
                 if resp.ok:
                     content = resp.text
@@ -196,7 +203,8 @@ const {{ chromium }} = require('puppeteer');
     
     def save_results(self):
         """Save results"""
-        filename = f"{OUTPUT_DIR}/crawl_{self.target.replace('.', '_')}_{datetime.utcnow().strftime('%Y%m%d_%H%M%S')}.json"
+        safe_target = re.sub(r"[^A-Za-z0-9._-]+", "_", self.target).strip("_")
+        filename = f"{OUTPUT_DIR}/crawl_{safe_target}_{datetime.utcnow().strftime('%Y%m%d_%H%M%S')}.json"
         
         # Don't save full JS content
         save_data = self.results.copy()

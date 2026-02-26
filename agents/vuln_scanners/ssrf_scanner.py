@@ -11,8 +11,11 @@ import requests
 import re
 from urllib.parse import urljoin, urlparse, parse_qs
 from datetime import datetime
+from pathlib import Path
+from core.evidence.store import EvidenceStore
+from core.rate_limit import from_env as budget_from_env
 
-OUTPUT_DIR = "/home/sparky/.openclaw/workspace/bugbounty-swarm/output"
+OUTPUT_DIR = os.getenv("SWARM_OUTPUT_DIR") or str(Path(__file__).resolve().parents[2] / "output")
 
 class SSRFScanner:
     def __init__(self, target, endpoints=None):
@@ -47,6 +50,8 @@ class SSRFScanner:
     def scan(self):
         """Run SSRF scan"""
         print(f"   🎯 SSRF Scanner: {self.target}")
+        self._evidence = EvidenceStore(OUTPUT_DIR, level=os.getenv("EVIDENCE_LEVEL", "standard"))
+        self._budget = budget_from_env()
         
         # Scan endpoints with potential SSRF params
         for endpoint in self.endpoints[:20]:
@@ -63,11 +68,14 @@ class SSRFScanner:
     
     def test_ssrf_param(self, url, param):
         """Test parameter for SSRF"""
+        baseline = self._baseline(url, param)
         for payload in self.payloads:
             test_params = {param: payload}
             
             try:
+                self._budget.wait_for_budget()
                 resp = self.session.get(url, params=test_params, timeout=10)
+                self._evidence.save_http(url, "GET", {"params": test_params}, {"status": resp.status_code, "body": resp.text[:2000]})
                 
                 # Check for signs of SSRF
                 indicators = []
@@ -87,7 +95,7 @@ class SSRFScanner:
                 # Timeout could indicate SSRF (server trying to connect)
                 # This is harder to detect without out-of-band
                 
-                if indicators:
+                if indicators and self._differs(baseline, resp):
                     finding = {
                         "type": "SSRF",
                         "url": url,
@@ -98,9 +106,9 @@ class SSRFScanner:
                         "timestamp": datetime.utcnow().isoformat()
                     }
                     
-                    if finding not in self.findings:
-                        self.findings.append(finding)
-                        print(f"      ⚠️ SSRF FOUND: {url}?{param}=...")
+                if finding not in self.findings:
+                    self.findings.append(finding)
+                    print(f"      ⚠️ SSRF FOUND: {url}?{param}=...")
                         
             except requests.exceptions.Timeout:
                 # Timeout could indicate SSRF
@@ -120,11 +128,29 @@ class SSRFScanner:
                     
             except Exception:
                 pass
+
+    def _baseline(self, url, param):
+        try:
+            self._budget.wait_for_budget()
+            return self.session.get(url, params={param: "http://example.com/"}, timeout=10)
+        except Exception:
+            return None
+
+    def _differs(self, baseline, resp) -> bool:
+        if not baseline:
+            return True
+        if baseline.status_code != resp.status_code:
+            return True
+        try:
+            return abs(len(baseline.text) - len(resp.text)) > 50
+        except Exception:
+            return True
     
     def save_results(self):
         """Save findings"""
         os.makedirs(OUTPUT_DIR, exist_ok=True)
-        filename = f"{OUTPUT_DIR}/ssrf_{self.target.replace('.', '_')}_{datetime.utcnow().strftime('%Y%m%d_%H%M%S')}.json"
+        safe_target = re.sub(r"[^A-Za-z0-9._-]+", "_", self.target).strip("_")
+        filename = f"{OUTPUT_DIR}/ssrf_{safe_target}_{datetime.utcnow().strftime('%Y%m%d_%H%M%S')}.json"
         
         with open(filename, "w") as f:
             json.dump({

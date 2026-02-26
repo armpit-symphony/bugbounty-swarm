@@ -11,8 +11,11 @@ import requests
 import re
 from urllib.parse import urljoin, urlparse
 from datetime import datetime
+from pathlib import Path
+from core.evidence.store import EvidenceStore
+from core.rate_limit import from_env as budget_from_env
 
-OUTPUT_DIR = "/home/sparky/.openclaw/workspace/bugbounty-swarm/output"
+OUTPUT_DIR = os.getenv("SWARM_OUTPUT_DIR") or str(Path(__file__).resolve().parents[2] / "output")
 
 class IDORScanner:
     def __init__(self, target):
@@ -40,6 +43,8 @@ class IDORScanner:
     def scan(self):
         """Run IDOR scan"""
         print(f"   🎯 IDOR Scanner: {self.target}")
+        self._evidence = EvidenceStore(OUTPUT_DIR, level=os.getenv("EVIDENCE_LEVEL", "standard"))
+        self._budget = budget_from_env()
         
         # Extract potential IDOR endpoints from target
         endpoints = self.extract_idor_endpoints()
@@ -83,17 +88,20 @@ class IDORScanner:
     
     def test_idor(self, endpoint):
         """Test endpoint for IDOR"""
+        baseline = self._baseline(endpoint)
         # Try different user IDs
         for test_id in [1, 2, 0, 999, "admin"]:
             try:
                 # Replace the numeric part
                 test_url = re.sub(r'/\d+/', f'/{test_id}/', endpoint)
                 
+                self._budget.wait_for_budget()
                 resp = self.session.get(test_url, timeout=10, allow_redirects=False)
+                self._evidence.save_http(test_url, "GET", {}, {"status": resp.status_code, "body": resp.text[:2000]})
                 
                 # Check for unauthorized access
                 # 200 with sensitive data = potential IDOR
-                if resp.status_code == 200:
+                if resp.status_code == 200 and self._differs(baseline, resp):
                     # Check for sensitive keywords
                     sensitive = ["email", "password", "address", "phone", "credit", 
                                 "ssn", "invoice", "order", "private", "profile"]
@@ -118,11 +126,29 @@ class IDORScanner:
                             
             except Exception:
                 pass
+
+    def _baseline(self, endpoint):
+        try:
+            self._budget.wait_for_budget()
+            return self.session.get(endpoint, timeout=10, allow_redirects=False)
+        except Exception:
+            return None
+
+    def _differs(self, baseline, resp) -> bool:
+        if not baseline:
+            return True
+        if baseline.status_code != resp.status_code:
+            return True
+        try:
+            return abs(len(baseline.text) - len(resp.text)) > 50
+        except Exception:
+            return True
     
     def save_results(self):
         """Save findings"""
         os.makedirs(OUTPUT_DIR, exist_ok=True)
-        filename = f"{OUTPUT_DIR}/idor_{self.target.replace('.', '_')}_{datetime.utcnow().strftime('%Y%m%d_%H%M%S')}.json"
+        safe_target = re.sub(r"[^A-Za-z0-9._-]+", "_", self.target).strip("_")
+        filename = f"{OUTPUT_DIR}/idor_{safe_target}_{datetime.utcnow().strftime('%Y%m%d_%H%M%S')}.json"
         
         with open(filename, "w") as f:
             json.dump({

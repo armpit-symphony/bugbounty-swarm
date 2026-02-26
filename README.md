@@ -134,6 +134,104 @@ Results are saved to `output/`:
 | `crawl_*.json` | Pages, forms, screenshots |
 | `vuln_scan_*.json` | All vulnerabilities found |
 | `swarm_report_*.md` | Human-readable summary |
+| `*_*.html` | Professional HTML report |
+
+## ✅ Profiles
+
+Run modes are defined in `configs/profiles.yaml` and default to `cautious`.
+
+- `passive`: Recon + crawl only
+- `cautious`: Recon + crawl + gated active tests
+- `active`: Deeper scans (authorized only)
+
+## 🔐 Scope
+
+Targets must be added to `configs/scope.json` before running.
+
+```
+{
+  "domains": ["example.com"],
+  "ips": [],
+  "notes": "Authorized targets only"
+}
+```
+
+## 🧪 Validation
+
+Run the validation harness on a scan report:
+
+```bash
+python3 -m core.harness.validate output/vuln_scan_example_com_YYYYMMDD_HHMMSS.json
+```
+
+Package evidence:
+
+```bash
+python3 scripts/package_evidence.py --output-dir output
+```
+
+## 🧾 Evidence Level
+
+Set evidence verbosity in `configs/budget.yaml`:
+
+```
+evidence_level: lite | standard | full
+```
+
+## 🎯 Focus Mode
+
+Enable target focus in `configs/focus.yaml` to lock the swarm to a single target:
+
+```
+enabled: true
+target: "example.com"
+days: 56
+mode: single | rotate
+rotate_targets:
+  - example.com
+  - example.org
+rotate_start: "2026-02-01T00:00:00Z"
+```
+
+## 🧭 OpenClaw Schema
+
+Schema definition lives in `configs/openclaw_schema.json`.
+
+## ⏱️ Rate Limits
+
+Configure request budgets in `configs/budget.yaml`:
+
+```
+requests:
+  max_per_minute: 120
+  max_per_run: 1000
+```
+
+## 🤖 OpenClaw Integration
+
+Emit a structured summary for OpenClaw and package artifacts:
+
+```bash
+python3 swarm_orchestrator.py example.com \
+  --profile cautious \
+  --run-vuln \
+  --authorized \
+  --openclaw \
+  --summary-json output/openclaw_summary.json \
+  --artifact-dir output/artifacts
+```
+
+For vuln scans:
+
+```bash
+python3 vuln_scanner_orchestrator.py https://example.com \
+  --authorized \
+  --profile cautious \
+  --tech "Next.js,React" \
+  --openclaw \
+  --summary-json output/openclaw_vuln_summary.json \
+  --artifact-dir output/artifacts
+```
 
 ## 🔒 Safety & Ethics
 

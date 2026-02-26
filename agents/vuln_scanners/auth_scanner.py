@@ -11,8 +11,11 @@ import requests
 import re
 from urllib.parse import urljoin
 from datetime import datetime
+from pathlib import Path
+from core.evidence.store import EvidenceStore
+from core.rate_limit import from_env as budget_from_env
 
-OUTPUT_DIR = "/home/sparky/.openclaw/workspace/bugbounty-swarm/output"
+OUTPUT_DIR = os.getenv("SWARM_OUTPUT_DIR") or str(Path(__file__).resolve().parents[2] / "output")
 
 class AuthScanner:
     def __init__(self, target):
@@ -24,6 +27,8 @@ class AuthScanner:
     def scan(self):
         """Run auth scan"""
         print(f"   🎯 Auth Scanner: {self.target}")
+        self._evidence = EvidenceStore(OUTPUT_DIR, level=os.getenv("EVIDENCE_LEVEL", "standard"))
+        self._budget = budget_from_env()
         
         # Check for login pages
         self.check_login_page()
@@ -47,7 +52,10 @@ class AuthScanner:
         for indicator in login_indicators:
             url = urljoin(self.target, indicator)
             try:
+                baseline = self._baseline(url)
+                self._budget.wait_for_budget()
                 resp = self.session.get(url, timeout=10)
+                self._evidence.save_http(url, "GET", {}, {"status": resp.status_code, "body": resp.text[:2000]})
                 if resp.status_code == 200:
                     # Check for security issues
                     issues = []
@@ -64,7 +72,7 @@ class AuthScanner:
                         if not re.search(r'minlength|min-length', resp.text, re.I):
                             issues.append("no_min_password_length")
                     
-                    if issues:
+                    if issues and self._differs(baseline, resp):
                         finding = {
                             "type": "Auth",
                             "issue": "login_page_issues",
@@ -86,7 +94,10 @@ class AuthScanner:
         for indicator in reset_indicators:
             url = urljoin(self.target, indicator)
             try:
+                baseline = self._baseline(url)
+                self._budget.wait_for_budget()
                 resp = self.session.get(url, timeout=10)
+                self._evidence.save_http(url, "GET", {}, {"status": resp.status_code, "body": resp.text[:2000]})
                 if resp.status_code == 200:
                     issues = []
                     
@@ -98,7 +109,7 @@ class AuthScanner:
                     if "not found" in resp.text.lower() or "invalid" in resp.text.lower():
                         issues.append("possible_user_enum")
                     
-                    if issues:
+                    if issues and self._differs(baseline, resp):
                         finding = {
                             "type": "Auth",
                             "issue": "password_reset_issues",
@@ -116,11 +127,14 @@ class AuthScanner:
     def check_weak_auth(self):
         """Check for weak authentication"""
         try:
+            baseline = self._baseline(self.target)
+            self._budget.wait_for_budget()
             resp = self.session.get(self.target, timeout=10)
+            self._evidence.save_http(self.target, "GET", {}, {"status": resp.status_code, "headers": dict(resp.headers)})
             
             # Check for basic auth header
             www_auth = resp.headers.get("WWW-Authenticate")
-            if www_auth:
+            if www_auth and self._differs(baseline, resp):
                 finding = {
                     "type": "Auth",
                     "issue": "basic_auth_enabled",
@@ -143,7 +157,7 @@ class AuthScanner:
                 if header not in resp.headers:
                     missing.append(issue)
             
-            if missing:
+            if missing and self._differs(baseline, resp):
                 finding = {
                     "type": "Auth",
                     "issue": "missing_security_headers",
@@ -155,6 +169,23 @@ class AuthScanner:
                 
         except Exception:
             pass
+
+    def _baseline(self, url):
+        try:
+            self._budget.wait_for_budget()
+            return self.session.get(url, timeout=10)
+        except Exception:
+            return None
+
+    def _differs(self, baseline, resp) -> bool:
+        if not baseline:
+            return True
+        if baseline.status_code != resp.status_code:
+            return True
+        try:
+            return abs(len(baseline.text) - len(resp.text)) > 50
+        except Exception:
+            return True
     
     def check_session(self):
         """Check session handling"""
@@ -188,7 +219,8 @@ class AuthScanner:
     def save_results(self):
         """Save findings"""
         os.makedirs(OUTPUT_DIR, exist_ok=True)
-        filename = f"{OUTPUT_DIR}/auth_{self.target.replace('.', '_')}_{datetime.utcnow().strftime('%Y%m%d_%H%M%S')}.json"
+        safe_target = re.sub(r"[^A-Za-z0-9._-]+", "_", self.target).strip("_")
+        filename = f"{OUTPUT_DIR}/auth_{safe_target}_{datetime.utcnow().strftime('%Y%m%d_%H%M%S')}.json"
         
         with open(filename, "w") as f:
             json.dump({

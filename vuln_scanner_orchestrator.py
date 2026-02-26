@@ -7,6 +7,9 @@ Coordinates XSS, SQLi, IDOR, SSRF, and Auth scanners
 import os
 import sys
 import json
+import argparse
+import re
+import shutil
 from datetime import datetime
 from pathlib import Path
 
@@ -19,13 +22,27 @@ from agents.vuln_scanners.sqli_scanner import SQLiScanner
 from agents.vuln_scanners.idor_scanner import IDORScanner
 from agents.vuln_scanners.ssrf_scanner import SSRFScanner
 from agents.vuln_scanners.auth_scanner import AuthScanner
+from core.scope import ScopeConfig, require_in_scope, require_authorized, default_scope_path
+from core.report import write_json, write_markdown, write_html
+from core.config import load_profiles, load_budget, repo_root
+from core.focus import load_focus, require_focus_target, resolve_focus_target
+from core.playbooks import load_all_playbooks
+from core.tech_router import route_playbooks
+from agents.triage_agent import triage_findings
+from scripts.package_evidence import package as package_evidence
 
-OUTPUT_DIR = "/home/sparky/.openclaw/workspace/bugbounty-swarm/output"
+OUTPUT_DIR = os.getenv("SWARM_OUTPUT_DIR") or str(Path(__file__).parent / "output")
+
+
+def _safe_slug(value: str) -> str:
+    return re.sub(r"[^A-Za-z0-9._-]+", "_", value).strip("_")
 
 class VulnScannerOrchestrator:
-    def __init__(self, target, crawl_data=None):
+    def __init__(self, target, crawl_data=None, output_dir: str = OUTPUT_DIR, tech_detected=None):
         self.target = target
         self.crawl_data = crawl_data or {}
+        self.output_dir = output_dir
+        self.tech_detected = tech_detected or []
         self.results = {
             "target": target,
             "timestamp": datetime.utcnow().isoformat(),
@@ -34,14 +51,20 @@ class VulnScannerOrchestrator:
             "by_severity": {"CRITICAL": 0, "HIGH": 0, "MEDIUM": 0, "LOW": 0}
         }
         
-        os.makedirs(OUTPUT_DIR, exist_ok=True)
+        os.makedirs(self.output_dir, exist_ok=True)
     
-    def run_all_scanners(self):
+    def run_all_scanners(self, active_tests: bool = True):
         """Run all vulnerability scanners"""
         print("\n" + "=" * 50)
         print("🎯 VULNERABILITY SCANNERS")
         print("=" * 50)
-        
+
+        if not active_tests:
+            print("⚪ Active tests disabled for this profile.")
+            self.report_paths = self.save_report()
+            self.print_summary()
+            return self.results
+
         forms = self.crawl_data.get("forms", [])
         endpoints = self.crawl_data.get("endpoints", [])
         
@@ -95,7 +118,21 @@ class VulnScannerOrchestrator:
         except Exception as e:
             print(f"   ❌ Auth failed: {e}")
         
-        self.save_report()
+        # Triage + de-dupe
+        all_findings = []
+        for _, findings in self.results["scans"].items():
+            all_findings.extend(findings)
+        triaged = triage_findings(all_findings)
+        playbooks = load_all_playbooks(str(repo_root() / "playbooks"))
+        routed = route_playbooks(self.tech_detected)
+        for f in triaged:
+            pb = playbooks.get(str(f.get("type", "")).lower(), {})
+            if pb and str(f.get("type", "")).lower() in routed:
+                f["playbook"] = pb
+        self.results["triaged_findings"] = triaged
+        self._recount(triaged)
+
+        self.report_paths = self.save_report()
         self.print_summary()
         
         return self.results
@@ -120,21 +157,168 @@ class VulnScannerOrchestrator:
         print(f"  MEDIUM: {self.results['by_severity']['MEDIUM']}")
         print(f"  LOW: {self.results['by_severity']['LOW']}")
         print("=" * 50)
-    
+
+    def _recount(self, findings):
+        self.results["by_severity"] = {"CRITICAL": 0, "HIGH": 0, "MEDIUM": 0, "LOW": 0}
+        for finding in findings:
+            severity = finding.get("severity", "MEDIUM")
+            if severity in self.results["by_severity"]:
+                self.results["by_severity"][severity] += 1
+        self.results["total_findings"] = len(findings)
+
     def save_report(self):
         """Save full report"""
-        filename = f"{OUTPUT_DIR}/vuln_scan_{self.target.replace('.', '_')}_{datetime.utcnow().strftime('%Y%m%d_%H%M%S')}.json"
-        
-        with open(filename, "w") as f:
-            json.dump(self.results, f, indent=2)
-        
-        print(f"\n💾 Report: {filename}")
+        slug = _safe_slug(self.target)
+        stamp = datetime.utcnow().strftime("%Y%m%d_%H%M%S")
+        base = f"vuln_scan_{slug}_{stamp}"
+        json_path = write_json(self.output_dir, base, self.results)
+        md = self._build_markdown()
+        md_path = write_markdown(self.output_dir, base, md)
+        html_body = self._build_html()
+        html_path = write_html(self.output_dir, base, f"Vulnerability Scan - {self.target}", html_body)
+        print(f"\n💾 Report: {json_path}")
+        print(f"📝 Markdown: {md_path}")
+        print(f"🌐 HTML: {html_path}")
+        return json_path, md_path, html_path
+
+    def _build_markdown(self) -> str:
+        summary = self.results.get("by_severity", {})
+        md = f"""# Vulnerability Scan - {self.target}
+
+**Generated:** {self.results.get('timestamp')}
+
+## Summary
+
+| Severity | Count |
+|---------|-------|
+| CRITICAL | {summary.get('CRITICAL', 0)} |
+| HIGH | {summary.get('HIGH', 0)} |
+| MEDIUM | {summary.get('MEDIUM', 0)} |
+| LOW | {summary.get('LOW', 0)} |
+
+## Findings
+"""
+        for f in self.results.get("triaged_findings", []):
+            md += (
+                f"- **{f.get('type')}** `{f.get('severity', 'MEDIUM')}` "
+                f"{f.get('url', '')} (confidence: {f.get('confidence', 0):.2f})\n"
+            )
+            pb = f.get("playbook", {})
+            if pb:
+                steps = self._step_names(pb.get("steps", []))
+                md += f"  Steps: {', '.join(steps)}\n"
+                md += f"  Evidence: {', '.join(pb.get('evidence', []))}\n"
+        return md
+
+    def _build_html(self) -> str:
+        summary = self.results.get("by_severity", {})
+        rows = ""
+        for f in self.results.get("triaged_findings", []):
+            pb = f.get("playbook", {})
+            steps = ", ".join(self._step_names(pb.get("steps", []))) if pb else ""
+            evidence = ", ".join(pb.get("evidence", [])) if pb else ""
+            rows += (
+                "<tr>"
+                f"<td>{f.get('type')}</td>"
+                f"<td>{f.get('severity','MEDIUM')}</td>"
+                f"<td>{f.get('confidence', 0):.2f}</td>"
+                f"<td>{f.get('url','')}</td>"
+                f"<td>{steps}</td>"
+                f"<td>{evidence}</td>"
+                "</tr>"
+            )
+        return f"""
+<h1>Vulnerability Scan - {self.target}</h1>
+<p><strong>Generated:</strong> {self.results.get('timestamp')}</p>
+<h2>Summary</h2>
+<table>
+  <tr><th>CRITICAL</th><th>HIGH</th><th>MEDIUM</th><th>LOW</th></tr>
+  <tr>
+    <td>{summary.get('CRITICAL',0)}</td>
+    <td>{summary.get('HIGH',0)}</td>
+    <td>{summary.get('MEDIUM',0)}</td>
+    <td>{summary.get('LOW',0)}</td>
+  </tr>
+</table>
+<h2>Findings</h2>
+<table>
+  <tr>
+    <th>Type</th><th>Severity</th><th>Confidence</th><th>URL</th><th>Playbook Steps</th><th>Evidence</th>
+  </tr>
+  {rows}
+</table>
+"""
+
+    def _step_names(self, steps) -> list:
+        names = []
+        if isinstance(steps, list):
+            for item in steps:
+                if isinstance(item, dict) and item:
+                    names.append(next(iter(item.keys())))
+        elif isinstance(steps, dict):
+            names.extend(list(steps.keys()))
+        return names
 
 if __name__ == "__main__":
-    if len(sys.argv) < 2:
-        print("Usage: python vuln_scanner_orchestrator.py <target_url>")
-        sys.exit(1)
-    
-    target = sys.argv[1]
-    scanner = VulnScannerOrchestrator(target)
-    scanner.run_all_scanners()
+    parser = argparse.ArgumentParser(description="Bug Bounty Swarm Vulnerability Scanners")
+    parser.add_argument("target", help="Target URL")
+    parser.add_argument("--authorized", action="store_true", help="Confirm explicit authorization")
+    parser.add_argument("--profile", default="cautious", choices=["passive", "cautious", "active"])
+    parser.add_argument("--output-dir", default=OUTPUT_DIR)
+    parser.add_argument("--tech", default="", help="Comma-separated tech labels to route playbooks")
+    parser.add_argument("--openclaw", action="store_true", help="Emit OpenClaw-friendly summary")
+    parser.add_argument("--artifact-dir", default="", help="Copy reports and evidence bundle here")
+    parser.add_argument("--summary-json", default="", help="Write summary JSON to this path")
+    args = parser.parse_args()
+
+    scope = ScopeConfig.load(default_scope_path())
+    require_in_scope(scope, args.target)
+    require_authorized(args.authorized)
+    focus = load_focus(str(repo_root() / "configs" / "focus.yaml"))
+    require_focus_target(focus, args.target)
+    focus_target = resolve_focus_target(focus)
+
+    os.environ["SWARM_OUTPUT_DIR"] = args.output_dir
+    budget_cfg = load_budget(str(repo_root() / "configs" / "budget.yaml"))
+    os.environ["EVIDENCE_LEVEL"] = str(budget_cfg.get("evidence_level", "standard"))
+    reqs = budget_cfg.get("requests", {})
+    os.environ["BUDGET_MAX_PER_MINUTE"] = str(reqs.get("max_per_minute", 120))
+    profiles = load_profiles(str(repo_root() / "configs" / "profiles.yaml"))
+    profile_cfg = profiles.get("profiles", {}).get(args.profile, {})
+    active_tests = bool(profile_cfg.get("active_tests", True))
+
+    tech_list = [t.strip() for t in args.tech.split(",") if t.strip()]
+    scanner = VulnScannerOrchestrator(args.target, output_dir=args.output_dir, tech_detected=tech_list)
+    scanner.run_all_scanners(active_tests=active_tests)
+
+    report_paths = getattr(scanner, "report_paths", None) or (None, None, None)
+    evidence_zip = package_evidence(args.output_dir)
+    if evidence_zip:
+        print(f"📦 Evidence bundle: {evidence_zip}")
+
+    summary = {
+        "schema_version": "1.0",
+        "target": args.target,
+        "profile": args.profile,
+        "reports": {
+            "json": report_paths[0],
+            "markdown": report_paths[1],
+            "html": report_paths[2],
+        },
+        "evidence_zip": evidence_zip,
+        "total_findings": scanner.results.get("total_findings", 0),
+        "focus_target": focus_target,
+    }
+
+    if args.summary_json:
+        with open(args.summary_json, "w") as f:
+            json.dump(summary, f, indent=2)
+
+    if args.artifact_dir:
+        os.makedirs(args.artifact_dir, exist_ok=True)
+        for p in [report_paths[0], report_paths[1], report_paths[2], evidence_zip]:
+            if p and os.path.exists(p):
+                shutil.copy2(p, args.artifact_dir)
+
+    if args.openclaw:
+        print(json.dumps(summary))

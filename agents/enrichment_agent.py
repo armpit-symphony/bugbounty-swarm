@@ -9,10 +9,13 @@ import os
 import sys
 import json
 import requests
+import re
 from datetime import datetime
+from pathlib import Path
+from core.rate_limit import from_env as budget_from_env
 
 # Config
-OUTPUT_DIR = "/home/sparky/.openclaw/workspace/bugbounty-swarm/output"
+OUTPUT_DIR = os.getenv("SWARM_OUTPUT_DIR") or str(Path(__file__).resolve().parents[1] / "output")
 VIRUSTOTAL_KEY = os.environ.get("VIRUSTOTAL_API_KEY", "")
 
 class EnrichmentAgent:
@@ -23,6 +26,7 @@ class EnrichmentAgent:
             "virustotal": [],
             "tech_detection": []
         }
+        self._budget = budget_from_env()
         
         os.makedirs(OUTPUT_DIR, exist_ok=True)
     
@@ -32,6 +36,7 @@ class EnrichmentAgent:
         
         try:
             url = f"https://cve.circl.lu/api/cve/{cve_id}"
+            self._budget.wait_for_budget()
             resp = requests.get(url, timeout=10)
             
             if resp.ok:
@@ -66,6 +71,7 @@ class EnrichmentAgent:
         try:
             url = f"https://www.virustotal.com/api/v3/ip_addresses/{ip}"
             headers = {"x-apikey": VIRUSTOTAL_KEY}
+            self._budget.wait_for_budget()
             resp = requests.get(url, headers=headers, timeout=10)
             
             if resp.ok:
@@ -97,6 +103,7 @@ class EnrichmentAgent:
         try:
             url = f"https://www.virustotal.com/api/v3/domains/{domain}"
             headers = {"x-apikey": VIRUSTOTAL_KEY}
+            self._budget.wait_for_budget()
             resp = requests.get(url, headers=headers, timeout=10)
             
             if resp.ok:
@@ -120,6 +127,7 @@ class EnrichmentAgent:
         print(f"   🔍 Tech detection: {url}")
         
         try:
+            self._budget.wait_for_budget()
             resp = requests.get(url, timeout=10)
             headers = resp.headers
             

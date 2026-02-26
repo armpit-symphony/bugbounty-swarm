@@ -1,0 +1,10 @@
+profiles:
+  passive:
+    active_tests: false
+    max_pages: 10
+  cautious:
+    active_tests: true
+    max_pages: 20
+  active:
+    active_tests: true
+    max_pages: 50

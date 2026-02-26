@@ -11,8 +11,11 @@ import requests
 import re
 from urllib.parse import urljoin, urlparse, parse_qs
 from datetime import datetime
+from pathlib import Path
+from core.evidence.store import EvidenceStore
+from core.rate_limit import from_env as budget_from_env
 
-OUTPUT_DIR = "/home/sparky/.openclaw/workspace/bugbounty-swarm/output"
+OUTPUT_DIR = os.getenv("SWARM_OUTPUT_DIR") or str(Path(__file__).resolve().parents[2] / "output")
 
 class SQLiScanner:
     def __init__(self, target, forms=None, endpoints=None):
@@ -59,6 +62,8 @@ class SQLiScanner:
     def scan(self):
         """Run SQLi scan"""
         print(f"   🎯 SQLi Scanner: {self.target}")
+        self._evidence = EvidenceStore(OUTPUT_DIR, level=os.getenv("EVIDENCE_LEVEL", "standard"))
+        self._budget = budget_from_env()
         
         # Scan forms
         for form in self.forms:
@@ -84,6 +89,7 @@ class SQLiScanner:
         
         url = urljoin(self.target, action)
         
+        baseline = self._baseline_form(url, method, inputs)
         for payload in self.payloads[:5]:
             data = {}
             for inp in inputs:
@@ -92,23 +98,32 @@ class SQLiScanner:
             
             try:
                 if method == "POST":
+                    self._budget.wait_for_budget()
                     resp = self.session.post(url, data=data, timeout=15)
+                    self._evidence.save_http(url, "POST", {"data": data}, {"status": resp.status_code, "body": resp.text[:2000]})
                 else:
+                    self._budget.wait_for_budget()
                     resp = self.session.get(url, params=data, timeout=15)
+                    self._evidence.save_http(url, "GET", {"params": data}, {"status": resp.status_code, "body": resp.text[:2000]})
                 
-                self.check_errors(url, payload, resp.text)
+                if self._differs(baseline, resp):
+                    self.check_errors(url, payload, resp.text)
                 
             except Exception:
                 pass
     
     def scan_params(self, url, params):
         """Test parameters for SQLi"""
+        baseline = self._baseline_params(url, params)
         for payload in self.payloads[:5]:
             test_params = {k: payload for k in params.keys()}
             
             try:
+                self._budget.wait_for_budget()
                 resp = self.session.get(url, params=test_params, timeout=15)
-                self.check_errors(url, payload, resp.text)
+                self._evidence.save_http(url, "GET", {"params": test_params}, {"status": resp.status_code, "body": resp.text[:2000]})
+                if self._differs(baseline, resp):
+                    self.check_errors(url, payload, resp.text)
                 
                 # Time-based detection
                 if "WAITFOR" in payload:
@@ -136,11 +151,41 @@ class SQLiScanner:
                     self.findings.append(finding)
                     print(f"      ⚠️ SQLi FOUND: {url}")
                 return
+
+    def _baseline_form(self, url, method, inputs):
+        data = {inp: "baseline" for inp in inputs if inp}
+        try:
+            if method == "POST":
+                self._budget.wait_for_budget()
+                return self.session.post(url, data=data, timeout=15)
+            self._budget.wait_for_budget()
+            return self.session.get(url, params=data, timeout=15)
+        except Exception:
+            return None
+
+    def _baseline_params(self, url, params):
+        data = {k: "baseline" for k in params.keys()}
+        try:
+            self._budget.wait_for_budget()
+            return self.session.get(url, params=data, timeout=15)
+        except Exception:
+            return None
+
+    def _differs(self, baseline, resp) -> bool:
+        if not baseline:
+            return True
+        if baseline.status_code != resp.status_code:
+            return True
+        try:
+            return abs(len(baseline.text) - len(resp.text)) > 50
+        except Exception:
+            return True
     
     def save_results(self):
         """Save findings"""
         os.makedirs(OUTPUT_DIR, exist_ok=True)
-        filename = f"{OUTPUT_DIR}/sqli_{self.target.replace('.', '_')}_{datetime.utcnow().strftime('%Y%m%d_%H%M%S')}.json"
+        safe_target = re.sub(r"[^A-Za-z0-9._-]+", "_", self.target).strip("_")
+        filename = f"{OUTPUT_DIR}/sqli_{safe_target}_{datetime.utcnow().strftime('%Y%m%d_%H%M%S')}.json"
         
         with open(filename, "w") as f:
             json.dump({

@@ -1,0 +1,5 @@
+{
+  "domains": [],
+  "ips": [],
+  "notes": "Add domains or IPs you are explicitly authorized to test. Subdomains are allowed."
+}
