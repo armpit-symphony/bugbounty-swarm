@@ -308,6 +308,12 @@ bash scripts/install_self.sh
 bash scripts/bootstrap.sh example.com
 ```
 
+Bootstrap now checks:
+- `python3` + `pip3`
+- installs Python deps
+- warns if `node` / `puppeteer` missing
+- validates `configs/scope.json`
+
 ## 🔒 Safety & Ethics
 
 > **⚠️ WARNING: For authorized testing only**
