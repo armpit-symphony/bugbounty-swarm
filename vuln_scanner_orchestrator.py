@@ -321,11 +321,9 @@ if __name__ == "__main__":
         errors = validate_schema(summary, schema)
         if errors:
             print(f"⚠️ OpenClaw schema validation errors: {errors}")
-            if args.schema_strict or args.openclaw:
-                raise SystemExit(2)
+            raise SystemExit(2)
     except Exception:
-        if args.schema_strict or args.openclaw:
-            raise
+        raise
 
     if args.summary_json:
         with open(args.summary_json, "w") as f:
