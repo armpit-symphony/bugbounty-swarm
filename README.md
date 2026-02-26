@@ -290,6 +290,18 @@ The dashboard includes:
 - Per-target aggregation
 - Filtering by type and text search
 
+## 📎 Operator Sheet
+
+See `OPERATOR_SHEET.md` for a one-page runbook.
+
+## 🧩 Self-Install (Agent)
+
+To install this repo as an agent skill on the server:
+
+```bash
+bash scripts/install_self.sh
+```
+
 ## 🔒 Safety & Ethics
 
 > **⚠️ WARNING: For authorized testing only**
