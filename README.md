@@ -232,6 +232,7 @@ python3 swarm_orchestrator.py example.com \
   --run-vuln \
   --authorized \
   --openclaw \
+  --schema-repair \
   --summary-json output/openclaw_summary.json \
   --artifact-dir output/artifacts
 ```
@@ -244,6 +245,7 @@ python3 vuln_scanner_orchestrator.py https://example.com \
   --profile cautious \
   --tech "Next.js,React" \
   --openclaw \
+  --schema-repair \
   --summary-json output/openclaw_vuln_summary.json \
   --artifact-dir output/artifacts
 ```

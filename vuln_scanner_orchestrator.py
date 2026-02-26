@@ -26,7 +26,7 @@ from core.scope import ScopeConfig, require_in_scope, require_authorized, defaul
 from core.report import write_json, write_markdown, write_html
 from core.config import load_profiles, load_budget, repo_root
 from core.focus import load_focus, require_focus_target, resolve_focus_target
-from core.openclaw_schema import load_schema, validate as validate_schema
+from core.openclaw_schema import load_schema, validate as validate_schema, repair as repair_schema
 from core.playbooks import load_all_playbooks
 from core.tech_router import route_playbooks
 from agents.triage_agent import triage_findings
@@ -270,6 +270,8 @@ if __name__ == "__main__":
     parser.add_argument("--openclaw", action="store_true", help="Emit OpenClaw-friendly summary")
     parser.add_argument("--artifact-dir", default="", help="Copy reports and evidence bundle here")
     parser.add_argument("--summary-json", default="", help="Write summary JSON to this path")
+    parser.add_argument("--schema-strict", action="store_true", help="Fail if OpenClaw schema validation fails")
+    parser.add_argument("--schema-repair", action="store_true", help="Auto-repair OpenClaw summary fields")
     args = parser.parse_args()
 
     scope = ScopeConfig.load(default_scope_path())
@@ -314,11 +316,16 @@ if __name__ == "__main__":
     schema_path = str(repo_root() / "configs" / "openclaw_schema.json")
     try:
         schema = load_schema(schema_path)
+        if args.schema_repair:
+            summary = repair_schema(summary, schema)
         errors = validate_schema(summary, schema)
         if errors:
             print(f"⚠️ OpenClaw schema validation errors: {errors}")
+            if args.schema_strict:
+                raise SystemExit(2)
     except Exception:
-        pass
+        if args.schema_strict:
+            raise
 
     if args.summary_json:
         with open(args.summary_json, "w") as f:
