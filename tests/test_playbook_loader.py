@@ -17,3 +17,21 @@ def test_validation_harness():
     score = score_false_positives(findings)
     assert score["total"] == 1
     assert score["missing_evidence"] == 0
+
+
+def test_openclaw_schema_validation():
+    from core.openclaw_schema import load_schema, validate
+
+    schema_path = os.path.join(os.path.dirname(__file__), "..", "configs", "openclaw_schema.json")
+    schema = load_schema(schema_path)
+    summary = {
+        "schema_version": "1.0",
+        "target": "example.com",
+        "profile": "cautious",
+        "reports": {"json": "a", "markdown": "b", "html": "c"},
+        "evidence_zip": None,
+        "tech_detected": [],
+        "vuln_scan": None,
+    }
+    errors = validate(summary, schema)
+    assert errors == []

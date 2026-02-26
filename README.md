@@ -215,6 +215,14 @@ Configure rotation quickly:
 python3 scripts/rotate_focus.py --targets "example.com,example.org" --days 56 --enable
 ```
 
+## ⏲️ Cron Example
+
+Run every day at 3am UTC:
+
+```
+0 3 * * * /usr/bin/python3 /home/sparky/bugbounty-swarm/scripts/run_focus.py >> /home/sparky/bugbounty-swarm/output/cron.log 2>&1
+```
+
 ## 🧰 Make Targets
 
 ```bash

@@ -14,7 +14,7 @@ import re
 from datetime import datetime
 from pathlib import Path
 from core.rate_limit import from_env as budget_from_env
-# response_differs reserved for future recon diffing enhancements
+from core.http_utils import response_differs
 
 # Config
 OUTPUT_DIR = os.getenv("SWARM_OUTPUT_DIR") or str(Path(__file__).resolve().parents[1] / "output")
@@ -96,8 +96,12 @@ class ReconAgent:
             url = f"https://api.shodan.io/dns/domain/{self.target}"
             params = {"key": SHODAN_KEY}
             self._budget.wait_for_budget()
+            baseline = requests.get(url, params=params, timeout=10)
+            self._budget.wait_for_budget()
             resp = requests.get(url, params=params, timeout=10)
             if resp.ok:
+                if not response_differs(baseline, resp):
+                    return
                 data = resp.json()
                 self.results["shodan"] = data
                 subdomains = data.get("subdomains", [])
@@ -121,8 +125,12 @@ class ReconAgent:
             }
             auth = (CENSYS_API_KEY, CENSYS_SECRET)
             self._budget.wait_for_budget()
+            baseline = requests.get(url, params=params, auth=auth, timeout=10)
+            self._budget.wait_for_budget()
             resp = requests.get(url, params=params, auth=auth, timeout=10)
             if resp.ok:
+                if not response_differs(baseline, resp):
+                    return
                 data = resp.json()
                 self.results["censys"] = data
                 print(f"      ✅ Cert search complete")
@@ -139,8 +147,12 @@ class ReconAgent:
         try:
             url = f"https://crt.sh/?q={self.target}&output=json"
             self._budget.wait_for_budget()
+            baseline = requests.get(url, timeout=15)
+            self._budget.wait_for_budget()
             resp = requests.get(url, timeout=15)
             if resp.ok:
+                if not response_differs(baseline, resp):
+                    return
                 data = resp.json()
                 subs = set()
                 for cert in data[:50]:  # Limit
