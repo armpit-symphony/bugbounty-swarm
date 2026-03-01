@@ -2,6 +2,11 @@
 """
 Bug Bounty Swarm Orchestrator
 Coordinates recon, crawl, and enrichment agents
+
+Features:
+- Safe scheme handling (auto-HTTP for localhost)
+- --scheme flag to force HTTP/HTTPS
+- Graceful error handling (no crashes on crawl failure)
 """
 
 import os
@@ -37,34 +42,57 @@ from core.scope import require_authorized
 # Config
 OUTPUT_DIR = os.getenv("SWARM_OUTPUT_DIR") or str(Path(__file__).parent / "output")
 
+# Local hosts that should default to HTTP
+LOCAL_HOSTS = {"localhost", "127.0.0.1", "::1", "0.0.0.0"}
+
 
 def _safe_slug(value: str) -> str:
     return re.sub(r"[^A-Za-z0-9._-]+", "_", value).strip("_")
 
+
+def normalize_target(raw: str, scheme: str = None) -> str:
+    """Normalize a target URL or host with a safe scheme default."""
+    raw = raw.strip()
+
+    if raw.startswith(("http://", "https://")):
+        return raw
+
+    host = raw.split("/")[0].split(":")[0].lower()
+    chosen = scheme if scheme else ("http" if host in LOCAL_HOSTS else "https")
+    return f"{chosen}://{raw}"
+
+
 class SwarmOrchestrator:
-    def __init__(self, target, profile="cautious", output_dir: str = OUTPUT_DIR):
+    def __init__(self, target, profile="cautious", output_dir: str = OUTPUT_DIR, scheme=None):
         self.target = target
+        self.raw_target = target
+        self.target_url = normalize_target(target, scheme)
+        self.scheme = self.target_url.split("://")[0]
         self.profile = profile
         self.output_dir = output_dir
         self.results = {
             "target": target,
+            "target_url": self.target_url,
+            "scheme": self.scheme,
             "timestamp": datetime.utcnow().isoformat(),
             "profile": profile,
             "recon": None,
             "crawl": None,
             "enrichment": None,
-            "summary": {}
+            "summary": {},
+            "errors": [],
         }
-        
+
         os.makedirs(self.output_dir, exist_ok=True)
-    
+
     def run_full_swarm(self):
         """Run complete bug bounty workflow"""
         print("=" * 60)
         print("🐞 BUG BOUNTY SWARM - STARTING")
-        print(f"   Target: {self.target}")
+        print(f"   Target: {self.raw_target}")
+        print(f"   URL: {self.target_url}")
         print("=" * 60)
-        
+
         profiles = load_profiles(str(repo_root() / "configs" / "profiles.yaml"))
         profile_cfg = profiles.get("profiles", {}).get(self.profile, {})
         max_pages = int(profile_cfg.get("max_pages", 20))
@@ -91,101 +119,130 @@ class SwarmOrchestrator:
         print("-" * 40)
         try:
             if recon_mcp and recon_mcp.available():
-                mcp_data = recon_mcp.run(self.target)
+                mcp_data = recon_mcp.run(self.raw_target)
                 if mcp_data:
                     self.results["recon"] = mcp_data
                 else:
-                    recon = ReconAgent(self.target)
+                    recon = ReconAgent(self.raw_target)
                     self.results["recon"] = recon.run()
             else:
-                recon = ReconAgent(self.target)
+                recon = ReconAgent(self.raw_target)
                 self.results["recon"] = recon.run()
         except Exception as e:
             print(f"   ❌ Recon failed: {e}")
-        
-        # Phase 2: Crawl
+            self.results["errors"].append({"stage": "recon", "error": str(e)})
+
+        # Phase 2: Crawl (graceful failure)
         print("\n🕷️ PHASE 2: CRAWL")
         print("-" * 40)
         try:
             if crawl_mcp and crawl_mcp.available():
-                mcp_data = crawl_mcp.run(self.target, max_pages=max_pages)
+                mcp_data = crawl_mcp.run(self.target_url, max_pages=max_pages)
                 if mcp_data:
                     self.results["crawl"] = mcp_data
                 else:
-                    crawl = CrawlAgent(self.target, max_pages=max_pages)
+                    crawl = CrawlAgent(self.target_url, max_pages=max_pages)
                     self.results["crawl"] = crawl.run()
             else:
-                crawl = CrawlAgent(self.target, max_pages=max_pages)
+                crawl = CrawlAgent(self.target_url, max_pages=max_pages)
                 self.results["crawl"] = crawl.run()
         except Exception as e:
-            print(f"   ❌ Crawl failed: {e}")
-        
-        # Phase 3: Enrichment
+            print(f"   ⚠️ Crawl failed: {e}")
+            self.results["crawl"] = {"error": str(e), "skipped": True}
+            self.results["errors"].append({"stage": "crawl", "error": str(e)})
+
+        # Phase 3: Enrichment (graceful failure)
         print("\n🔍 PHASE 3: ENRICHMENT")
         print("-" * 40)
         try:
             if enrich_mcp and enrich_mcp.available():
-                mcp_data = enrich_mcp.run(self.target)
+                mcp_data = enrich_mcp.run(self.raw_target)
                 if mcp_data:
                     self.results["enrichment"] = mcp_data
                 else:
                     enrichment = EnrichmentAgent()
-                    enrichment.detect_tech(f"https://{self.target}")
+                    try:
+                        enrichment.detect_tech(self.target_url)
+                    except Exception as e:
+                        print(f"   ⚠️ Tech detection failed: {e}")
+                        self.results["errors"].append({"stage": "tech_detection", "error": str(e)})
                     if self.results.get("recon") and self.results["recon"].get("dns", {}).get("a"):
-                        for ip in self.results["recon"]["dns"]["a"]:
-                            enrichment.lookup_ip_virustotal(ip)
+                        try:
+                            for ip in self.results["recon"]["dns"]["a"]:
+                                enrichment.lookup_ip_virustotal(ip)
+                        except Exception as e:
+                            print(f"   ⚠️ IP enrichment failed: {e}")
                     enrichment.save_results()
                     self.results["enrichment"] = enrichment.results
             else:
                 enrichment = EnrichmentAgent()
-                enrichment.detect_tech(f"https://{self.target}")
+                try:
+                    enrichment.detect_tech(self.target_url)
+                except Exception as e:
+                    print(f"   ⚠️ Tech detection failed: {e}")
+                    self.results["errors"].append({"stage": "tech_detection", "error": str(e)})
                 if self.results.get("recon") and self.results["recon"].get("dns", {}).get("a"):
-                    for ip in self.results["recon"]["dns"]["a"]:
-                        enrichment.lookup_ip_virustotal(ip)
+                    try:
+                        for ip in self.results["recon"]["dns"]["a"]:
+                            enrichment.lookup_ip_virustotal(ip)
+                    except Exception as e:
+                        print(f"   ⚠️ IP enrichment failed: {e}")
                 enrichment.save_results()
                 self.results["enrichment"] = enrichment.results
         except Exception as e:
-            print(f"   ❌ Enrichment failed: {e}")
-        
+            print(f"   ⚠️ Enrichment failed: {e}")
+            self.results["enrichment"] = {"error": str(e)}
+            self.results["errors"].append({"stage": "enrichment", "error": str(e)})
+
         # Generate summary
         self.generate_summary()
-        
+
         print("\n" + "=" * 60)
-        print("✅ SWARM COMPLETE")
+        if self.results["errors"]:
+            print("⚠️ SWARM COMPLETED WITH ERRORS")
+        else:
+            print("✅ SWARM COMPLETE")
         print("=" * 60)
-        
+
         return self.results
-    
+
     def generate_summary(self):
         """Generate summary of findings"""
+        recon = self.results.get("recon") or {}
+        crawl = self.results.get("crawl") or {}
+        enrichment = self.results.get("enrichment") or {}
+
         summary = {
-            "subdomains_found": len(self.results.get("recon", {}).get("subdomains", [])),
-            "pages_crawled": len(self.results.get("crawl", {}).get("pages", [])),
-            "screenshots": len(self.results.get("crawl", {}).get("screenshots", [])),
-            "forms_found": len(self.results.get("crawl", {}).get("forms", [])),
-            "js_files": len(self.results.get("crawl", {}).get("js_files", [])),
-            "tech_detected": []
+            "subdomains_found": len(recon.get("subdomains", [])),
+            "pages_crawled": len(crawl.get("pages", [])) if isinstance(crawl, dict) else 0,
+            "screenshots": len(crawl.get("screenshots", [])) if isinstance(crawl, dict) else 0,
+            "forms_found": len(crawl.get("forms", [])) if isinstance(crawl, dict) else 0,
+            "js_files": len(crawl.get("js_files", [])) if isinstance(crawl, dict) else 0,
+            "tech_detected": [],
+            "error_count": len(self.results.get("errors", [])),
         }
-        
-        # Extract tech
-        if self.results.get("enrichment", {}).get("tech_detection"):
-            for td in self.results["enrichment"]["tech_detection"]:
-                summary["tech_detected"].extend(td.get("tech", []))
-        
+
+        if enrichment.get("tech_detection"):
+            for td in enrichment["tech_detection"]:
+                if isinstance(td, dict):
+                    summary["tech_detected"].extend(td.get("tech", []))
+
         summary["tech_detected"] = list(set(summary["tech_detected"]))
-        
+
         self.results["summary"] = summary
-        
+
         print("\n📊 SUMMARY:")
         print(f"   Subdomains: {summary['subdomains_found']}")
         print(f"   Pages: {summary['pages_crawled']}")
         print(f"   Screenshots: {summary['screenshots']}")
         print(f"   Forms: {summary['forms_found']}")
-        print(f"   Tech: {', '.join(summary['tech_detected'][:5])}")
-    
+        print(f"   Tech: {', '.join(summary['tech_detected'][:5]) or 'None'}")
+        if summary["error_count"] > 0:
+            print(f"   Errors: {summary['error_count']}")
+
     def save_report(self):
         """Save final JSON report"""
-        slug = _safe_slug(self.target)
+        slug = _safe_slug(self.raw_target)
         stamp = datetime.utcnow().strftime("%Y%m%d_%H%M%S")
         base = f"swarm_report_{slug}_{stamp}"
         json_path = write_json(self.output_dir, base, self.results)
@@ -194,14 +251,17 @@ class SwarmOrchestrator:
         print(f"📝 Markdown: {md_path}")
         print(f"🌐 HTML: {html_path}")
         return json_path, md_path, html_path
-    
+
     def save_markdown_report(self, base_name):
         """Save human-readable markdown report"""
         summary = self.results.get("summary", {})
-        
-        md = f"""# Bug Bounty Report - {self.target}
+        recon = self.results.get("recon") or {}
+        crawl = self.results.get("crawl") or {}
+
+        md = f"""# Bug Bounty Report - {self.raw_target}
 
 **Generated:** {self.results['timestamp']}
+**Target URL:** {self.target_url}
 **Profile:** {self.profile}
 
 ## Summary
@@ -213,6 +273,7 @@ class SwarmOrchestrator:
 | Screenshots | {summary.get('screenshots', 0)} |
 | Forms | {summary.get('forms_found', 0)} |
 | JS Files | {summary.get('js_files', 0)} |
+| Errors | {summary.get('error_count', 0)} |
 
 ## Technologies Detected
 
@@ -221,42 +282,48 @@ class SwarmOrchestrator:
 ## Recon Findings
 
 """
-        
-        # Add subdomains
-        if self.results.get("recon", {}).get("subdomains"):
+
+        if recon.get("subdomains"):
             md += "### Subdomains\n\n"
-            for sub in self.results["recon"]["subdomains"][:20]:
+            for sub in recon["subdomains"][:20]:
                 md += f"- {sub}\n"
             md += "\n"
-        
-        # Add pages
-        if self.results.get("crawl", {}).get("pages"):
+
+        if crawl.get("pages"):
             md += "### Crawled Pages\n\n"
-            for page in self.results["crawl"]["pages"][:10]:
+            for page in crawl["pages"][:10]:
                 md += f"- [{page.get('title', 'No title')}]({page.get('url')}) - {page.get('forms_count')} forms\n"
             md += "\n"
-        
-        # Add forms
-        if self.results.get("crawl", {}).get("forms"):
+        elif crawl.get("error"):
+            md += f"_Crawl failed: {crawl['error']}_\n\n"
+
+        if crawl.get("forms"):
             md += "### Forms Found\n\n"
-            for form in self.results["crawl"]["forms"][:10]:
+            for form in crawl["forms"][:10]:
                 md += f"- {form.get('method', 'GET').upper()} {form.get('action', '/')} ({len(form.get('inputs', []))} inputs)\n"
             md += "\n"
-        
-        # Screenshots
-        if self.results.get("crawl", {}).get("screenshots"):
+
+        if crawl.get("screenshots"):
             md += "### Screenshots\n\n"
-            for ss in self.results["crawl"]["screenshots"]:
+            for ss in crawl["screenshots"]:
                 md += f"- `{ss.get('name')}`: {ss.get('path')}\n"
-        
+
+        if self.results.get("errors"):
+            md += "\n### Errors\n\n"
+            for err in self.results["errors"]:
+                md += f"- **{err.get('stage', 'unknown')}**: {err.get('error', 'Unknown error')}\n"
+
         md_path = write_markdown(self.output_dir, base_name, md)
-        html_body = f"<h1>Bug Bounty Report - {self.target}</h1>" + md.replace("\n", "<br />")
-        html_path = write_html(self.output_dir, base_name, f"Bug Bounty Report - {self.target}", html_body)
+        html_body = f"<h1>Bug Bounty Report - {self.raw_target}</h1>" + md.replace("\n", "<br />")
+        html_path = write_html(self.output_dir, base_name, f"Bug Bounty Report - {self.raw_target}", html_body)
         return md_path, html_path
+
 
 if __name__ == "__main__":
     parser = argparse.ArgumentParser(description="Bug Bounty Swarm Orchestrator")
     parser.add_argument("target", help="Target domain or URL")
+    parser.add_argument("--scheme", choices=["http", "https"], help="Force HTTP or HTTPS scheme")
+    parser.add_argument("--force-http", action="store_true", help="Equivalent to --scheme http")
     parser.add_argument("--profile", default="cautious", choices=["passive", "cautious", "active"])
     parser.add_argument("--output-dir", default=OUTPUT_DIR)
     parser.add_argument("--openclaw", action="store_true", help="Emit OpenClaw-friendly summary")
@@ -269,6 +336,9 @@ if __name__ == "__main__":
     parser.add_argument("--dry-run", action="store_true", help="Validate config and emit empty report without requests")
     args = parser.parse_args()
 
+    if args.force_http:
+        args.scheme = "http"
+
     scope = ScopeConfig.load(default_scope_path())
     require_in_scope(scope, args.target)
     focus = load_focus(str(repo_root() / "configs" / "focus.yaml"))
@@ -276,7 +346,7 @@ if __name__ == "__main__":
     focus_target = resolve_focus_target(focus)
 
     os.environ["SWARM_OUTPUT_DIR"] = args.output_dir
-    orchestrator = SwarmOrchestrator(args.target, profile=args.profile, output_dir=args.output_dir)
+    orchestrator = SwarmOrchestrator(args.target, profile=args.profile, output_dir=args.output_dir, scheme=args.scheme)
     budget_cfg = load_budget(str(repo_root() / "configs" / "budget.yaml"))
     os.environ["EVIDENCE_LEVEL"] = str(budget_cfg.get("evidence_level", "standard"))
     reqs = budget_cfg.get("requests", {})
@@ -284,6 +354,8 @@ if __name__ == "__main__":
     if args.dry_run:
         results = {
             "target": args.target,
+            "target_url": normalize_target(args.target, args.scheme),
+            "scheme": (args.scheme or normalize_target(args.target, None).split("://")[0]),
             "timestamp": datetime.utcnow().isoformat(),
             "profile": args.profile,
             "note": "dry_run_no_requests",
@@ -291,6 +363,7 @@ if __name__ == "__main__":
             "crawl": None,
             "enrichment": None,
             "summary": {},
+            "errors": [],
         }
         orchestrator.results = results
     else:
