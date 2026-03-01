@@ -23,6 +23,7 @@ from agents.vuln_scanners.idor_scanner import IDORScanner
 from agents.vuln_scanners.ssrf_scanner import SSRFScanner
 from agents.vuln_scanners.auth_scanner import AuthScanner
 from core.scope import ScopeConfig, require_in_scope, require_authorized, default_scope_path
+from core.auth_policy import require_auth_policy, default_policy_path
 from core.report import write_json, write_markdown, write_html
 from core.config import load_profiles, load_budget, repo_root
 from core.focus import load_focus, require_focus_target, resolve_focus_target
@@ -281,7 +282,22 @@ if __name__ == "__main__":
     parser.add_argument("--schema-strict", action="store_true", help="Fail if OpenClaw schema validation fails")
     parser.add_argument("--schema-repair", action="store_true", help="Auto-repair OpenClaw summary fields")
     parser.add_argument("--dry-run", action="store_true", help="Emit empty report without requests")
+    parser.add_argument("--auth", default="", metavar="PATH",
+                        help="Path to auth policy YAML (default: ./policy.yml)")
+    parser.add_argument("--require-auth", default=True, action=argparse.BooleanOptionalAction,
+                        help="Require valid auth policy before running (default: true)")
     args = parser.parse_args()
+
+    # --- Authorization Gate (fail-closed) ---
+    auth_path = args.auth or default_policy_path()
+    if args.require_auth:
+        require_auth_policy(auth_path)
+    else:
+        print(
+            "[auth_policy] WARNING: --no-require-auth set. "
+            "Running WITHOUT authorization gate enforcement.",
+            flush=True,
+        )
 
     scope = ScopeConfig.load(default_scope_path())
     require_in_scope(scope, args.target)

@@ -144,6 +144,58 @@ Run modes are defined in `configs/profiles.yaml` and default to `cautious`.
 - `cautious`: Recon + crawl + gated active tests
 - `active`: Deeper scans (authorized only)
 
+## 🔒 Authorization Gate
+
+The swarm **fails closed** — it will not execute unless a valid auth policy YAML loads successfully.
+
+### Default policy path
+
+`policy.yml` in the repo root.  Edit it before running:
+
+```yaml
+version: "1"
+allow:
+  targets:
+    - target.com          # domains you are explicitly authorized to test
+  actions:
+    - recon
+    - crawl
+    - enrichment
+    - vuln_scan
+```
+
+### CLI flags
+
+```bash
+# Use default ./policy.yml (auto-enforced)
+python3 swarm_orchestrator.py target.com
+
+# Specify a different policy file
+python3 swarm_orchestrator.py target.com --auth /path/to/policy.yml
+
+# Bypass (prints big warning — not recommended)
+python3 swarm_orchestrator.py target.com --no-require-auth
+```
+
+### Audit log
+
+Every successful policy load prints to stdout:
+
+```
+AUTHZ_ENFORCED run_id=<uuid> policy_sha256=<sha256> policy_path=<path>
+```
+
+Set `SWARM_AUTH_LOG=/path/to/auth.log` to also append the event to a file.
+
+### Failure cases (all exit nonzero)
+
+| Condition | Exit |
+|-----------|------|
+| Policy file missing | 1 |
+| YAML parse error | 1 |
+| Schema invalid (missing version/allow/targets/actions) | 1 |
+| Empty allow.targets or allow.actions | 1 |
+
 ## 🔐 Scope
 
 Targets must be added to `configs/scope.json` before running.

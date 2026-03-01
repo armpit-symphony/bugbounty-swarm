@@ -38,6 +38,7 @@ from mcp.enrichment_adapter import EnrichmentMCPAdapter
 from scripts.package_evidence import package as package_evidence
 from vuln_scanner_orchestrator import VulnScannerOrchestrator
 from core.scope import require_authorized
+from core.auth_policy import require_auth_policy, default_policy_path
 
 # Config
 OUTPUT_DIR = os.getenv("SWARM_OUTPUT_DIR") or str(Path(__file__).parent / "output")
@@ -334,10 +335,25 @@ if __name__ == "__main__":
     parser.add_argument("--schema-strict", action="store_true", help="Fail if OpenClaw schema validation fails")
     parser.add_argument("--schema-repair", action="store_true", help="Auto-repair OpenClaw summary fields")
     parser.add_argument("--dry-run", action="store_true", help="Validate config and emit empty report without requests")
+    parser.add_argument("--auth", default="", metavar="PATH",
+                        help="Path to auth policy YAML (default: ./policy.yml)")
+    parser.add_argument("--require-auth", default=True, action=argparse.BooleanOptionalAction,
+                        help="Require valid auth policy before running (default: true)")
     args = parser.parse_args()
 
     if args.force_http:
         args.scheme = "http"
+
+    # --- Authorization Gate (fail-closed) ---
+    auth_path = args.auth or default_policy_path()
+    if args.require_auth:
+        require_auth_policy(auth_path)
+    else:
+        print(
+            "[auth_policy] WARNING: --no-require-auth set. "
+            "Running WITHOUT authorization gate enforcement.",
+            flush=True,
+        )
 
     scope = ScopeConfig.load(default_scope_path())
     require_in_scope(scope, args.target)
