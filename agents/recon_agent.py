@@ -50,7 +50,7 @@ class ReconAgent:
         if SHODAN_KEY:
             self.shodan_lookup()
         else:
-            print("⚪ configured Shodan not - skipping")
+            print("⚪ Shodan not configured - skipping")
         
         if CENSYS_API_KEY:
             self.censys_lookup()

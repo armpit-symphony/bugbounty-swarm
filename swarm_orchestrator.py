@@ -246,7 +246,7 @@ class SwarmOrchestrator:
         slug = _safe_slug(self.raw_target)
         stamp = datetime.utcnow().strftime("%Y%m%d_%H%M%S")
         base = f"swarm_report_{slug}_{stamp}"
-        json_path = write_json(self.output_dir, base, self.results)
+        json_path = write_json(str(Path(self.output_dir) / f"{base}.json"), self.results)
         print(f"\n💾 Report: {json_path}")
         md_path, html_path = self.save_markdown_report(base)
         print(f"📝 Markdown: {md_path}")
@@ -314,9 +314,9 @@ class SwarmOrchestrator:
             for err in self.results["errors"]:
                 md += f"- **{err.get('stage', 'unknown')}**: {err.get('error', 'Unknown error')}\n"
 
-        md_path = write_markdown(self.output_dir, base_name, md)
+        md_path = write_markdown(str(Path(self.output_dir) / f"{base_name}.md"), md)
         html_body = f"<h1>SwarmReview Report - {self.raw_target}</h1>" + md.replace("\n", "<br />")
-        html_path = write_html(self.output_dir, base_name, f"SwarmReview Report - {self.raw_target}", html_body)
+        html_path = write_html(str(Path(self.output_dir) / f"{base_name}.html"), f"SwarmReview Report - {self.raw_target}", html_body)
         return md_path, html_path
 
 

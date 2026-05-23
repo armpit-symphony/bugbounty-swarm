@@ -11,25 +11,25 @@ def _ensure_dir(path: str) -> None:
     Path(path).mkdir(parents=True, exist_ok=True)
 
 
-def write_json(output_dir: str, name: str, data: dict) -> str:
-    _ensure_dir(output_dir)
-    path = Path(output_dir) / f"{name}.json"
-    with open(path, "w") as f:
+def write_json(path: str, data: dict) -> str:
+    p = Path(path)
+    p.parent.mkdir(parents=True, exist_ok=True)
+    with open(p, "w") as f:
         json.dump(data, f, indent=2)
-    return str(path)
+    return str(p)
 
 
-def write_markdown(output_dir: str, name: str, md: str) -> str:
-    _ensure_dir(output_dir)
-    path = Path(output_dir) / f"{name}.md"
-    with open(path, "w") as f:
+def write_markdown(path: str, md: str) -> str:
+    p = Path(path)
+    p.parent.mkdir(parents=True, exist_ok=True)
+    with open(p, "w") as f:
         f.write(md)
-    return str(path)
+    return str(p)
 
 
-def write_html(output_dir: str, name: str, title: str, body: str) -> str:
-    _ensure_dir(output_dir)
-    path = Path(output_dir) / f"{name}.html"
+def write_html(path: str, title: str, body: str) -> str:
+    p = Path(path)
+    p.parent.mkdir(parents=True, exist_ok=True)
     html = f"""<!doctype html>
 <html lang="en">
 <head>
@@ -51,6 +51,6 @@ def write_html(output_dir: str, name: str, title: str, body: str) -> str:
 </body>
 </html>
 """
-    with open(path, "w") as f:
+    with open(p, "w") as f:
         f.write(html)
-    return str(path)
+    return str(p)

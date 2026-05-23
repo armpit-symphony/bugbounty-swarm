@@ -127,7 +127,7 @@ class CodeReviewPipeline:
                         })
                 except json.JSONDecodeError:
                     pass
-        except (subprocess.Expiredaresult.TimedExc, FileNotFoundError):
+        except (subprocess.TimeoutExpired, FileNotFoundError):
             print("[SwarmReview] Bandit not available — skipping Python SAST")
 
         # Try Semgrep (multi-language)

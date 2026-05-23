@@ -10,13 +10,13 @@ validate:
 
 # Code review targets
 review:
-	$(PY) bugbounty-swarm review --repo . --profile review-cautious
+	$(PY) swarm_review_cli.py review --repo . --profile review-cautious
 
 review-deep:
-	$(PY) bugbounty-swarm review --repo . --profile review-deep
+	$(PY) swarm_review_cli.py review --repo . --profile review-deep
 
 review-diff:
-	$(PY) bugbounty-swarm review --diff /path/to/changes.diff --profile review-cautious
+	$(PY) swarm_review_cli.py review --diff /path/to/changes.diff --profile review-cautious
 
 # Install SwarmReview dependencies
 install:

@@ -28,7 +28,10 @@ def _utc_now() -> str:
 
 
 def _safe_slug(value: str) -> str:
-    return re.sub(r"[^A-Za-z0-9._-]+", "_", value).strip("_")
+    slug = re.sub(r"[^A-Za-z0-9._-]+", "_", value).strip("_")
+    # Collapse consecutive dots to prevent path traversal
+    slug = re.sub(r"\.{2,}", ".", slug).lstrip(".")
+    return slug or "_"
 
 
 def _default_out_dir() -> str:

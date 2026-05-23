@@ -11,7 +11,6 @@ import json
 import re
 import subprocess
 import base64
-import entropy
 from pathlib import Path
 from typing import Optional
 
@@ -72,10 +71,10 @@ SECRET_PATTERNS = [
     (r"[0-9]{8,10}:[A-Za-z0-9_-]{35}", "Telegram Bot Token", "CRITICAL", "telegram-token"),
 
     # Discord
-    (r"[MN][A-Za-z\\d]{23,}\.[\w-]{6}\.[\w-]{27}", "Discord Bot Token", "CRITICAL", "discord-token"),
+    (r"[MN][A-Za-z\d]{23,}\.[\w-]{6}\.[\w-]{27}", "Discord Bot Token", "CRITICAL", "discord-token"),
 
     # Google Cloud
-    (r"[a-zA-Z0-9_-]+@([a-z]|d){2,}[-.]?g(serviceaccount)?\\.iam\\.gserviceaccount\\.com", "Google Service Account", "CRITICAL", "gcp-service-account"),
+    (r"[a-zA-Z0-9_-]+@([a-z]|d){2,}[-.]?g(serviceaccount)?\.iam\.gserviceaccount\.com", "Google Service Account", "CRITICAL", "gcp-service-account"),
 ]
 
 # File extensions that should be scanned

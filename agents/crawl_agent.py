@@ -125,7 +125,6 @@ class CrawlAgent:
             self.results["pages"].append(page_info)
 
             print(f"      ✅ {len(forms)} forms, {len(soup.find_all('a'))} links")
-            print(f"      ✅ {len(forms)} forms, {len(soup.find_all('a'))} links")
                 
         except Exception as e:
             print(f"      ❌ Failed: {e}")

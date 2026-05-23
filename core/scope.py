@@ -20,7 +20,7 @@ def _normalize_host(target: str) -> str:
 
 
 def _is_ip(host: str) -> bool:
-    return bool(re.fullmatch(r"[0-9]{1,3}(?:\\.[0-9]{1,3}){3}", host))
+    return bool(re.fullmatch(r"[0-9]{1,3}(?:\.[0-9]{1,3}){3}", host))
 
 
 @dataclass
